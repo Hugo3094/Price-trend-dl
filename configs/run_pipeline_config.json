@@ -1,7 +1,7 @@
 {
   "PIPELINE": {
-    "TEST_MODE": true,
-    "TEST_SMALL_CRSP": true,
+    "TEST_MODE": false,
+    "TEST_SMALL_CRSP": false,
     "SEED": 42,
     "RESULTS_DIR": "results",
     "CHECKPOINTS_DIR": "checkpoints"

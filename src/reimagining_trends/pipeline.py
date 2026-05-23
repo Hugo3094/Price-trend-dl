@@ -34,6 +34,7 @@ from reimagining_trends.models.cnn import build_cnn
 from reimagining_trends.models.lstm import build_attention_lstm, build_gru, build_lstm
 from reimagining_trends.models.mlp import build_mlp
 from reimagining_trends.training.train import Trainer, get_device, plot_history, set_seed
+from reimagining_trends.utils.cache import model_fp as build_model_fp
 from reimagining_trends.utils.config import Config
 
 logger = logging.getLogger(__name__)
@@ -131,7 +132,11 @@ class Pipeline:
         logger.info("3. OHLC image generation")
         logger.info("=" * 60)
 
-        ticker_sample = list(self.raw_data.keys())[0]
+        # Pick the first security that has enough data for the largest window (60d)
+        ticker_sample = next(
+            (k for k, v in self.raw_data.items() if len(v) >= 120),
+            list(self.raw_data.keys())[0],
+        )
         df_sample = self.raw_data[ticker_sample]
 
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
@@ -192,9 +197,13 @@ class Pipeline:
             model = build_mlp(window=self.cfg.window, n_features=N_FEAT,
                               hidden_dims=self.cfg.mlp_hidden_dims, dropout=self.cfg.mlp_dropout)
             self.trainers["MLP"] = self._build_trainer(model, "mlp", "MLP")
+            fp = build_model_fp(self.cfg, "mlp", {
+                "hidden_dims": self.cfg.mlp_hidden_dims, "dropout": self.cfg.mlp_dropout,
+                "n_features": N_FEAT,
+            })
             hist = self.trainers["MLP"].fit(
                 self.tab_ds["X_train"], self.tab_ds["y_train"],
-                self.tab_ds["X_val"],   self.tab_ds["y_val"], **fit_kwargs)
+                self.tab_ds["X_val"],   self.tab_ds["y_val"], **fit_kwargs, fingerprint=fp)
             plot_history(hist, "MLP", save_path=self._path("history_mlp.png"))
 
         if "GRU" in self.cfg.models_to_train:
@@ -202,9 +211,13 @@ class Pipeline:
             model = build_gru(n_features=N_FEAT, hidden_size=self.cfg.gru_hidden_size,
                               num_layers=self.cfg.gru_num_layers, dropout=self.cfg.gru_dropout)
             self.trainers["GRU"] = self._build_trainer(model, "gru", "GRU")
+            fp = build_model_fp(self.cfg, "gru", {
+                "hidden_size": self.cfg.gru_hidden_size, "num_layers": self.cfg.gru_num_layers,
+                "dropout": self.cfg.gru_dropout, "n_features": N_FEAT,
+            })
             hist = self.trainers["GRU"].fit(
                 self.tab_ds["X_train"], self.tab_ds["y_train"],
-                self.tab_ds["X_val"],   self.tab_ds["y_val"], **fit_kwargs)
+                self.tab_ds["X_val"],   self.tab_ds["y_val"], **fit_kwargs, fingerprint=fp)
             plot_history(hist, "GRU", save_path=self._path("history_gru.png"))
 
         if "LSTM" in self.cfg.models_to_train:
@@ -213,19 +226,27 @@ class Pipeline:
                                num_layers=self.cfg.lstm_num_layers, dropout=self.cfg.lstm_dropout,
                                bidirectional=self.cfg.lstm_bidirectional)
             self.trainers["LSTM"] = self._build_trainer(model, "lstm", "LSTM")
+            fp = build_model_fp(self.cfg, "lstm", {
+                "hidden_size": self.cfg.lstm_hidden_size, "num_layers": self.cfg.lstm_num_layers,
+                "dropout": self.cfg.lstm_dropout, "bidirectional": self.cfg.lstm_bidirectional,
+                "n_features": N_FEAT,
+            })
             hist = self.trainers["LSTM"].fit(
                 self.tab_ds["X_train"], self.tab_ds["y_train"],
-                self.tab_ds["X_val"],   self.tab_ds["y_val"], **fit_kwargs)
+                self.tab_ds["X_val"],   self.tab_ds["y_val"], **fit_kwargs, fingerprint=fp)
             plot_history(hist, "LSTM", save_path=self._path("history_lstm.png"))
 
         if "CNN" in self.cfg.models_to_train:
             logger.info("--- CNN ---")
             model = build_cnn(window=self.cfg.window, dropout=self.cfg.cnn_dropout)
             self.trainers["CNN"] = self._build_trainer(model, "cnn", "CNN")
+            fp = build_model_fp(self.cfg, "cnn", {
+                "dropout": self.cfg.cnn_dropout, "window": self.cfg.window,
+            })
             hist = self.trainers["CNN"].fit(
                 self.img_ds["X_train"], self.img_ds["y_train"],
                 self.img_ds["X_val"],   self.img_ds["y_val"],
-                **{**fit_kwargs, "batch_size": 32})
+                **{**fit_kwargs, "batch_size": 32}, fingerprint=fp)
             plot_history(hist, "CNN", save_path=self._path("history_cnn.png"))
 
     def _section_evaluation(self) -> None:
@@ -378,4 +399,4 @@ class Pipeline:
 
     def _build_trainer(self, model, model_type: str, name: str) -> Trainer:
         save_dir = os.path.join(self.cfg.checkpoints_dir, f"{name.lower()}_w{self.cfg.window}")
-        return Trainer(model, model_type, save_dir=save_dir, device=self.device)
+        return Trainer(model, model_type, save_dir=save_dir, device=self.device, model_name=name)

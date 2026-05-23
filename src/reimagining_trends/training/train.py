@@ -15,6 +15,10 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from typing import Optional
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+from reimagining_trends.utils.cache import (
+    load_json, save_json, load_pickle, fingerprints_match,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,13 +84,16 @@ class Trainer:
         model_type: str,
         save_dir: str = "checkpoints",
         device: Optional[torch.device] = None,
+        model_name: str = "",
     ) -> None:
         self.model = model
         self.model_type = model_type
+        self.model_name = model_name or model_type.upper()
         self.save_dir = save_dir
         self.device = device or get_device()
         self.model.to(self.device)
         os.makedirs(save_dir, exist_ok=True)
+        self.fingerprint: Optional[dict] = None  # set by fit() after training or cache hit
 
     def fit(
         self,
@@ -98,6 +105,7 @@ class Trainer:
         weight_decay: float = 1e-5,
         patience: int = 5,
         verbose: bool = True,
+        fingerprint: Optional[dict] = None,
     ) -> dict:
         """
         Runs training.
@@ -106,6 +114,21 @@ class Trainer:
         -------
         history : dict with train_loss, val_loss, train_acc, val_acc per epoch
         """
+        fp_path   = os.path.join(self.save_dir, "fingerprint.json")
+        ckpt_path = os.path.join(self.save_dir, "best_model.pt")
+        hist_path = os.path.join(self.save_dir, f"{self.model_type}_history.json")
+
+        if fingerprint is not None:
+            cached_fp = load_json(fp_path)
+            if fingerprints_match(fingerprint, cached_fp) and os.path.exists(ckpt_path):
+                logger.info("[%s] Cache hit — loading checkpoint, skipping training.", self.model_name)
+                self.load_best()
+                self.fingerprint = fingerprint
+                if os.path.exists(hist_path):
+                    with open(hist_path, "r") as f:
+                        return json.load(f)
+                return {}
+
         train_loader = make_dataloader(X_train, y_train, batch_size, shuffle=True, model_type=self.model_type)
         val_loader = make_dataloader(X_val, y_val, batch_size, shuffle=False, model_type=self.model_type)
 
@@ -118,24 +141,45 @@ class Trainer:
         patience_counter = 0
         best_epoch = 0
 
-        for epoch in range(1, epochs + 1):
+        n_train = len(train_loader.dataset)
+        n_val   = len(val_loader.dataset)
+        logger.info(
+            "Training %s | %d train / %d val samples | %d epochs | batch=%d | device=%s",
+            self.model_name, n_train, n_val, epochs, batch_size, self.device,
+        )
+
+        epoch_bar = tqdm(
+            range(1, epochs + 1),
+            desc=self.model_name,
+            unit="epoch",
+            dynamic_ncols=True,
+            leave=True,
+        )
+        for epoch in epoch_bar:
             t0 = time.time()
 
             train_loss, train_acc = self._run_epoch(train_loader, criterion, optimizer, train=True)
             val_loss, val_acc = self._run_epoch(val_loader, criterion, None, train=False)
 
             scheduler.step()
+            elapsed = time.time() - t0
 
             history["train_loss"].append(train_loss)
             history["val_loss"].append(val_loss)
             history["train_acc"].append(train_acc)
             history["val_acc"].append(val_acc)
 
+            epoch_bar.set_postfix(
+                tr_loss=f"{train_loss:.4f}",
+                vl_loss=f"{val_loss:.4f}",
+                vl_acc=f"{val_acc:.3f}",
+                s=f"{elapsed:.1f}s",
+            )
             if verbose:
-                elapsed = time.time() - t0
-                logger.info(
-                    "Epoch %3d/%d | Train loss=%.4f acc=%.3f | Val loss=%.4f acc=%.3f | %.1fs",
-                    epoch, epochs, train_loss, train_acc, val_loss, val_acc, elapsed,
+                tqdm.write(
+                    f"[{self.model_name}] Epoch {epoch:3d}/{epochs} | "
+                    f"train loss={train_loss:.4f} acc={train_acc:.3f} | "
+                    f"val loss={val_loss:.4f} acc={val_acc:.3f} | {elapsed:.1f}s"
                 )
 
             if val_loss < best_val_loss:
@@ -146,13 +190,18 @@ class Trainer:
             else:
                 patience_counter += 1
                 if patience_counter >= patience:
-                    if verbose:
-                        logger.info("Early stopping at epoch %d (best: %d)", epoch, best_epoch)
+                    tqdm.write(
+                        f"[{self.model_name}] Early stopping at epoch {epoch} "
+                        f"(best epoch: {best_epoch}, val_loss: {best_val_loss:.4f})"
+                    )
                     break
 
-        history_path = os.path.join(self.save_dir, f"{self.model_type}_history.json")
-        with open(history_path, "w") as f:
+        with open(hist_path, "w") as f:
             json.dump(history, f, indent=2)
+
+        if fingerprint is not None:
+            save_json(fingerprint, fp_path)
+        self.fingerprint = fingerprint or {}
 
         return history
 

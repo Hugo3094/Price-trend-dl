@@ -8,6 +8,7 @@ Backtester — orchestrates the full backtest pipeline:
 import logging
 import os
 import traceback
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,6 +21,10 @@ from reimagining_trends.data.fetch_data import (
     _ensure_flat_columns, add_moving_average, cumret_scale, image_scale,
 )
 from reimagining_trends.imaging.ohlc_chart import generate_ohlc_image
+from reimagining_trends.utils.cache import (
+    benchmark_fp, backtest_fp, scores_fp,
+    dict_hash, fingerprints_match, load_json, save_json, load_pickle, save_pickle,
+)
 from reimagining_trends.utils.config import Config
 
 logger = logging.getLogger(__name__)
@@ -43,6 +48,8 @@ class Backtester:
         self.raw_data = raw_data
         self.trainers = trainers
         os.makedirs(config.results_dir, exist_ok=True)
+        self._cache_dir = os.path.join(config.results_dir, "backtest_cache")
+        os.makedirs(self._cache_dir, exist_ok=True)
 
         # populated in _load_aux_data / _build_panels
         self._rf: pd.Series           = pd.Series(dtype=float)
@@ -88,15 +95,16 @@ class Backtester:
             trainer.load_best()
             mtype = _MODEL_TYPE.get(model_name, "mlp")
             logger.info("Scoring %s on test dates …", model_name)
-            scores_by_date = self._compute_all_scores(trainer, mtype)
+            scores_by_date, sc_fp = self._compute_all_scores(trainer, mtype)
 
             for weighting in weightings:
                 for port_type in port_types:
                     key = f"{model_name}_{weighting}_{port_type}"
                     logger.info("Backtest: %s", key)
                     try:
+                        bt_fp = backtest_fp(sc_fp, self.cfg, weighting, port_type)
                         result = self._single_backtest(
-                            scores_by_date, weighting, port_type
+                            scores_by_date, weighting, port_type, key=key, bt_fp=bt_fp,
                         )
                         all_results[key] = result
                         m = result["metrics"]
@@ -116,13 +124,16 @@ class Backtester:
         # ── Benchmark strategies (MOM, STR, WSTR) ─────────────────────────
         benchmarks = getattr(self.cfg, "bt_benchmarks", ["MOM", "STR", "WSTR"])
         for bench_name in benchmarks:
-            bench_scores = self._benchmark_scores_for(bench_name)
+            bench_scores, bm_fp = self._benchmark_scores_for(bench_name)
             for weighting in weightings:
                 for port_type in port_types:
                     key = f"{bench_name}_{weighting}_{port_type}"
                     logger.info("Benchmark backtest: %s", key)
                     try:
-                        result = self._single_backtest(bench_scores, weighting, port_type)
+                        bt_fp = backtest_fp(bm_fp, self.cfg, weighting, port_type)
+                        result = self._single_backtest(
+                            bench_scores, weighting, port_type, key=key, bt_fp=bt_fp,
+                        )
                         all_results[key] = result
                         m = result["metrics"]
                         logger.info(
@@ -255,11 +266,22 @@ class Backtester:
             self._signal_mom.shape, self._signal_str.shape, self._signal_wstr.shape,
         )
 
-    def _benchmark_scores_for(self, signal_name: str) -> dict:
+    def _benchmark_scores_for(self, signal_name: str) -> tuple[dict, dict]:
         """
-        Return scores_by_date for a benchmark signal on the same rebalancing
-        grid used by models (every h trading days in the test period).
+        Return (scores_by_date, bm_fp) for a benchmark signal on the same
+        rebalancing grid used by models (every h trading days in the test period).
         """
+        bm_fp_dict = benchmark_fp(signal_name, self.cfg)
+
+        cache_pkl  = os.path.join(self._cache_dir, f"bm_{signal_name}_scores.pkl")
+        cache_json = os.path.join(self._cache_dir, f"bm_{signal_name}_scores_fingerprint.json")
+        cached_fp  = load_json(cache_json)
+        if fingerprints_match(bm_fp_dict, cached_fp):
+            cached = load_pickle(cache_pkl)
+            if cached is not None:
+                logger.info("[%s] Benchmark scores cache hit.", signal_name)
+                return cached, bm_fp_dict
+
         panel = {"MOM": self._signal_mom, "STR": self._signal_str, "WSTR": self._signal_wstr}[signal_name]
 
         test_dates = self._daily_ret.index[self._daily_ret.index > self.cfg.val_end]
@@ -274,22 +296,40 @@ class Backtester:
             if scores:
                 scores_by_date[t] = scores
 
-        return scores_by_date
+        save_pickle(scores_by_date, cache_pkl)
+        save_json(bm_fp_dict, cache_json)
+        return scores_by_date, bm_fp_dict
 
     # ------------------------------------------------------------------
     # Signal generation
     # ------------------------------------------------------------------
 
-    def _compute_all_scores(self, trainer, model_type: str) -> dict:
+    def _compute_all_scores(self, trainer, model_type: str) -> tuple[dict, dict]:
         """
         For each rebalancing date t (signal date), run model on all tickers.
 
         Returns
         -------
-        {date: {ticker: P(UP)}}
+        (scores_by_date, sc_fp)
+            scores_by_date : {date: {ticker: P(UP)}}
+            sc_fp          : fingerprint dict for downstream backtest_fp()
         """
+        sc_fp: dict = {}
+        if trainer.fingerprint:
+            ckpt_path = os.path.join(trainer.save_dir, "best_model.pt")
+            sc_fp = scores_fp(trainer.fingerprint, ckpt_path)
+
+            cache_pkl  = os.path.join(trainer.save_dir, "scores_cache.pkl")
+            cache_json = os.path.join(trainer.save_dir, "scores_fingerprint.json")
+            cached_fp  = load_json(cache_json)
+            if fingerprints_match(sc_fp, cached_fp):
+                cached = load_pickle(cache_pkl)
+                if cached is not None:
+                    logger.info("[%s] Scores cache hit.", trainer.model_name)
+                    return cached, sc_fp
+
         test_dates   = self._daily_ret.index[self._daily_ret.index > self.cfg.val_end]
-        reb_dates    = test_dates[::self.cfg.horizon]   # every h trading days
+        reb_dates    = test_dates[::self.cfg.horizon]
 
         scores_by_date: dict = {}
         for t in reb_dates:
@@ -301,7 +341,11 @@ class Backtester:
             if scores:
                 scores_by_date[t] = scores
 
-        return scores_by_date
+        if sc_fp:
+            save_pickle(scores_by_date, os.path.join(trainer.save_dir, "scores_cache.pkl"))
+            save_json(sc_fp, os.path.join(trainer.save_dir, "scores_fingerprint.json"))
+
+        return scores_by_date, sc_fp
 
     def _score_ticker(self, ticker: str, t, trainer, model_type: str):
         """Return P(UP) for one ticker at signal date t, or None if unavailable."""
@@ -356,7 +400,24 @@ class Backtester:
     # Single backtest run
     # ------------------------------------------------------------------
 
-    def _single_backtest(self, scores_by_date: dict, weighting: str, port_type: str) -> dict:
+    def _single_backtest(
+        self,
+        scores_by_date: dict,
+        weighting: str,
+        port_type: str,
+        key: str = "",
+        bt_fp: Optional[dict] = None,
+    ) -> dict:
+        if bt_fp and key:
+            cache_pkl  = os.path.join(self._cache_dir, f"{key}_result.pkl")
+            cache_json = os.path.join(self._cache_dir, f"{key}_fingerprint.json")
+            cached_fp  = load_json(cache_json)
+            if fingerprints_match(bt_fp, cached_fp):
+                cached = load_pickle(cache_pkl)
+                if cached is not None:
+                    logger.info("[%s] Backtest result cache hit.", key)
+                    return cached
+
         schedule = self._build_schedule(scores_by_date, weighting, port_type)
         if not schedule:
             raise ValueError("Empty schedule — no rebalancing dates found.")
@@ -364,10 +425,10 @@ class Backtester:
         borrow_daily = self.cfg.bt_borrow_cost_bps_per_year / 10_000.0 / 252.0
 
         sim = simulate_portfolio(
-            schedule        = schedule,
-            daily_returns   = self._daily_ret,
-            rf_series       = self._rf,
-            cost_bps        = self.cfg.bt_cost_bps,
+            schedule          = schedule,
+            daily_returns     = self._daily_ret,
+            rf_series         = self._rf,
+            cost_bps          = self.cfg.bt_cost_bps,
             borrow_rate_daily = borrow_daily if port_type == "LS" else 0.0,
         )
 
@@ -379,7 +440,13 @@ class Backtester:
             horizon           = self.cfg.horizon,
             periods_per_year  = 252,
         )
-        return {"sim": sim, "metrics": metrics, "schedule": schedule}
+        result = {"sim": sim, "metrics": metrics, "schedule": schedule}
+
+        if bt_fp and key:
+            save_pickle(result, os.path.join(self._cache_dir, f"{key}_result.pkl"))
+            save_json(bt_fp, os.path.join(self._cache_dir, f"{key}_fingerprint.json"))
+
+        return result
 
     def _build_schedule(self, scores_by_date: dict, weighting: str, port_type: str) -> list:
         """
