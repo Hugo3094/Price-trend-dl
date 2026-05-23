@@ -1,0 +1,2 @@
+uv sync --extra dev
+uv run pytest

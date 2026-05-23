@@ -1,0 +1,76 @@
+{
+  "PIPELINE": {
+    "TEST_MODE": false,
+    "TEST_SMALL_CRSP": false,
+    "SEED": 42,
+    "RESULTS_DIR": "results",
+    "CHECKPOINTS_DIR": "checkpoints"
+  },
+  "DATA": {
+    "DATA_SOURCE": "parquet",
+    "PARQUET_PATH": "data/wrds_gross_query.parquet",
+    "PERMNOS": null,
+    "START": "2010-01-01",
+    "END": "2022-12-31",
+    "SAVE_DIR": null
+  },
+  "PREPROCESSING": {
+    "WINDOW": 20,
+    "HORIZON": 5,
+    "SCALING": "image",
+    "INCLUDE_VOL": true,
+    "INCLUDE_MA": true,
+    "TRAIN_END": "2016-12-31",
+    "VAL_END": "2019-12-31",
+    "TRAIN_RATIO": 0.70,
+    "VAL_RATIO": 0.15
+  },
+  "TRAINING": {
+    "EPOCHS": 30,
+    "BATCH_SIZE": 64,
+    "PATIENCE": 5,
+    "LR": 0.0001,
+    "WEIGHT_DECAY": 0.00001,
+    "MODELS": ["MLP", "GRU", "LSTM", "CNN"]
+  },
+  "MODELS": {
+    "MLP": {
+      "HIDDEN_DIMS": [256, 128, 64],
+      "DROPOUT": 0.3
+    },
+    "LSTM": {
+      "HIDDEN_SIZE": 128,
+      "NUM_LAYERS": 2,
+      "DROPOUT": 0.3,
+      "BIDIRECTIONAL": false
+    },
+    "GRU": {
+      "HIDDEN_SIZE": 128,
+      "NUM_LAYERS": 2,
+      "DROPOUT": 0.3
+    },
+    "ATTENTION_LSTM": {
+      "HIDDEN_SIZE": 128,
+      "NUM_LAYERS": 2,
+      "DROPOUT": 0.3
+    },
+    "CNN": {
+      "DROPOUT": 0.5
+    }
+  },
+  "EVALUATION": {
+    "N_DECILES": 10,
+    "PERIODS_PER_YEAR": 52
+  },
+  "BACKTEST": {
+    "PORTFOLIO_TYPE": "both",
+    "WEIGHTING": "all",
+    "NEUTRALITY": ["sector", "beta"],
+    "BETA_WINDOW": 252,
+    "MIN_BETA_OBS": 126,
+    "COST_BPS": 10,
+    "BORROW_COST_BPS_PER_YEAR": 100,
+    "RF_PATH": "data/risk_free_returns.parquet",
+    "BENCHMARKS": ["MOM", "STR", "WSTR"]
+  }
+}
