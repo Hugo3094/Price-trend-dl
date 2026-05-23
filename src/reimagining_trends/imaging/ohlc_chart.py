@@ -11,6 +11,7 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from reimagining_trends.data.fetch_data import (
     DEFAULT_TRAIN_END,
@@ -261,7 +262,14 @@ def _ratio_split_image_dataset(
 
     X_all, y_all, ret_all = [], [], []
 
-    for _, df in data.items():
+    n_stocks = len(data)
+    logger.info(
+        "Building image dataset (ratio split): %d securities | window=%d | horizon=%d",
+        n_stocks, window, horizon,
+    )
+
+    bar = tqdm(data.items(), desc="OHLC images", unit="stock", total=n_stocks, dynamic_ncols=True)
+    for _, df in bar:
         df = _ensure_flat_columns(df).copy()
 
         if include_ma:
@@ -289,6 +297,8 @@ def _ratio_split_image_dataset(
             X_all.append(img)
             y_all.append(label)
             ret_all.append(ret)
+
+        bar.set_postfix(images=f"{len(X_all):,}")
 
     X = np.array(X_all, dtype=np.float32) / 255.0
     X = X[:, :, :, np.newaxis]
@@ -385,8 +395,17 @@ def make_image_dataset(
     }
 
     skipped = 0
+    total_images = 0
 
-    for _, df in data.items():
+    n_stocks = len(data)
+    logger.info(
+        "Building image dataset: %d securities | window=%d | horizon=%d | "
+        "vol=%s | ma=%s | train_end=%s | val_end=%s",
+        n_stocks, window, horizon, include_vol, include_ma, train_end, val_end,
+    )
+
+    bar = tqdm(data.items(), desc="OHLC images", unit="stock", total=n_stocks, dynamic_ncols=True)
+    for _, df in bar:
         df = _ensure_flat_columns(df).copy()
 
         if include_ma:
@@ -429,10 +448,17 @@ def make_image_dataset(
                     buckets[split_name][0].append(img)
                     buckets[split_name][1].append(label)
                     buckets[split_name][2].append(ret)
+                    total_images += 1
 
                 except Exception:
                     skipped += 1
 
+        bar.set_postfix(images=f"{total_images:,}", skipped=skipped)
+
+    logger.info(
+        "Image generation complete: %d images | %d skipped",
+        total_images, skipped,
+    )
     if verbose and skipped > 0:
         logger.info("%d windows skipped", skipped)
 

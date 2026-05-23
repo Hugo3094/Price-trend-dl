@@ -8,8 +8,10 @@ All parameters are taken from Config, so nothing is hardcoded.
 """
 
 import logging
+import os
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from reimagining_trends.data.fetch_data import (
@@ -18,7 +20,10 @@ from reimagining_trends.data.fetch_data import (
     load_parquet,
     make_multi_stock_dataset,
 )
-from reimagining_trends.imaging.ohlc_chart import make_image_dataset
+from reimagining_trends.imaging.ohlc_chart import IMAGE_SPECS, make_image_dataset
+from reimagining_trends.utils.cache import (
+    file_md5, fingerprints_match, load_json, save_json,
+)
 from reimagining_trends.utils.config import Config
 
 logger = logging.getLogger(__name__)
@@ -136,7 +141,11 @@ class DataManager:
         raw_data: Optional[dict[str, pd.DataFrame]] = None,
     ) -> dict:
         """
-        Build the OHLC image (CNN) dataset.
+        Build the OHLC image (CNN) dataset, with fingerprint-based caching.
+
+        On a cache hit the dataset is loaded from a compressed .npz file,
+        skipping image generation entirely.  The cache is stored under
+        ``{checkpoints_dir}/image_dataset/``.
 
         Parameters
         ----------
@@ -150,10 +159,23 @@ class DataManager:
         if not data:
             raise RuntimeError("No raw data available. Call download() or load() first.")
 
-        logger.info(
-            "Building image dataset: window=%d, horizon=%d, vol=%s, ma=%s",
-            self.cfg.window, self.cfg.horizon, self.cfg.include_vol, self.cfg.include_ma,
-        )
+        cache_dir = os.path.join(self.cfg.checkpoints_dir, "image_dataset")
+        fp_path   = os.path.join(cache_dir, "fingerprint.json")
+        npz_path  = os.path.join(cache_dir, "dataset.npz")
+
+        fp = self._image_fingerprint()
+        cached_fp = load_json(fp_path)
+        if fingerprints_match(fp, cached_fp) and os.path.exists(npz_path):
+            logger.info("Image dataset cache hit — loading from %s", npz_path)
+            npz = np.load(npz_path, allow_pickle=False)
+            ds: dict = {k: npz[k] for k in npz.files}
+            specs = IMAGE_SPECS[self.cfg.window]
+            ds["image_shape"] = (specs["height"], specs["width"], 1)
+            ds["window"]  = self.cfg.window
+            ds["horizon"] = self.cfg.horizon
+            self._log_split_sizes("image", ds)
+            return ds
+
         ds = make_image_dataset(
             data=data,
             window=self.cfg.window,
@@ -165,8 +187,36 @@ class DataManager:
             val_ratio=self.cfg.val_ratio,
             seed=self.cfg.seed,
         )
+
+        os.makedirs(cache_dir, exist_ok=True)
+        array_keys = [k for k, v in ds.items() if isinstance(v, np.ndarray)]
+        np.savez_compressed(npz_path, **{k: ds[k] for k in array_keys})
+        save_json(fp, fp_path)
+        logger.info("Image dataset cached to %s", npz_path)
+
         self._log_split_sizes("image", ds)
         return ds
+
+    def _image_fingerprint(self) -> dict:
+        """All inputs that can affect the image dataset output."""
+        data_hash = None
+        if getattr(self.cfg, "parquet_path", None) and os.path.exists(self.cfg.parquet_path):
+            data_hash = file_md5(self.cfg.parquet_path)
+        return {
+            "data_source": self.cfg.data_source,
+            "data_hash":   data_hash,
+            "start":       self.cfg.start,
+            "end":         self.cfg.end,
+            "permnos":     sorted(self.cfg.permnos) if self.cfg.permnos else None,
+            "window":      self.cfg.window,
+            "horizon":     self.cfg.horizon,
+            "include_vol": self.cfg.include_vol,
+            "include_ma":  self.cfg.include_ma,
+            "train_end":   self.cfg.train_end,
+            "val_end":     self.cfg.val_end,
+            "val_ratio":   self.cfg.val_ratio,
+            "seed":        self.cfg.seed,
+        }
 
     # ------------------------------------------------------------------
     # Internal helpers
