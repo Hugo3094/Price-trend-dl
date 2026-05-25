@@ -33,6 +33,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+from pprint import pp
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,7 @@ class Config:
         self.window: int = 20
         self.horizon: int = 5
         self.scaling: str = "image"
+        self.ablation_mode: str = "manual"
         self.include_vol: bool = True
         self.include_ma: bool = True
         self.train_end: str = "2016-12-31"
@@ -210,6 +212,7 @@ class Config:
             "window": self.window,
             "horizon": self.horizon,
             "scaling": self.scaling,
+            "ablation_mode": self.ablation_mode,
             "include_vol": self.include_vol,
             "include_ma": self.include_ma,
             "train_end": self.train_end,
@@ -278,10 +281,29 @@ class Config:
             self.horizon = int(pp["HORIZON"])
         if pp.get("SCALING") is not None:
             self.scaling = pp["SCALING"]
+        if pp.get("ABLATION_MODE") is not None:
+            self.ablation_mode = str(pp["ABLATION_MODE"]).lower()    
         if pp.get("INCLUDE_VOL") is not None:
             self.include_vol = bool(pp["INCLUDE_VOL"])
         if pp.get("INCLUDE_MA") is not None:
             self.include_ma = bool(pp["INCLUDE_MA"])
+        if self.ablation_mode != "manual":
+            valid_modes = {"all", "ma", "volume"}
+            if self.ablation_mode not in valid_modes:
+                raise ValueError(
+                    f"Invalid ABLATION_MODE='{self.ablation_mode}'. "
+                    f"Expected one of {sorted(valid_modes)} or 'manual'."
+                )
+
+            self.include_vol = self.ablation_mode in {"all", "volume"}
+            self.include_ma = self.ablation_mode in {"all", "ma"}
+
+            logger.info(
+                "ABLATION_MODE=%s -> include_vol=%s, include_ma=%s",
+                self.ablation_mode,
+                self.include_vol,
+                self.include_ma,
+            )
         if pp.get("TRAIN_END") is not None:
             self.train_end = pp["TRAIN_END"]
         if pp.get("VAL_END") is not None:
