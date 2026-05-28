@@ -1,149 +1,230 @@
 # Price Trend Prediction — MLP vs LSTM vs CNN
 
-> **Problématique :** Dans quelle mesure le choix de la représentation des données (tabulaire, séquentielle, visuelle) et de l'architecture associée (MLP, RNN/LSTM/GRU, CNN) influence-t-il la capacité à prédire les rendements boursiers ?
+> **Research question:** To what extent does the choice of data representation (tabular, sequential, visual) and its associated architecture (MLP, RNN/LSTM/GRU, CNN) influence the ability to predict stock returns?
 
-Implémentation et extension du papier **"(Re-)Imag(in)ing Price Trends"** (Jiang, Kelly & Xiu, *Journal of Finance*, 2023).
-
----
-
-## Résultats clés
-
-| Modèle | Représentation | Accuracy | AUC | Sharpe H-L (EW) |
-|--------|---------------|----------|-----|-----------------|
-| MLP    | Tabulaire (image scale) | ~52% | ~0.54 | ~1.2 |
-| GRU    | Séquentielle | ~53% | ~0.55 | ~1.5 |
-| LSTM   | Séquentielle | ~54% | ~0.56 | ~1.8 |
-| **CNN**| **Images OHLC** | **~56%** | **~0.59** | **~3.1** |
-
-> *Résultats obtenus sur un sous-ensemble de tickers S&P500 (2000–2022), fenêtre 20 jours, horizon 5 jours.*
+An implementation and extension of the paper **"(Re-)Imag(in)ing Price Trends"** (Jiang, Kelly & Xiu, *Journal of Finance*, 2023).
 
 ---
 
-## Architecture du projet
+## Table of Contents
+
+- [Overview](#overview)
+- [Key Results](#key-results)
+- [Project Structure](#project-structure)
+- [Data Representations](#data-representations)
+- [Analysis Dimensions](#analysis-dimensions)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Dependencies](#dependencies)
+- [Authors](#authors)
+- [Reference](#reference)
+
+---
+
+## Overview
+
+This project compares three deep learning architectures applied to stock return prediction, each operating on a different representation of the same OHLCV (Open, High, Low, Close, Volume) price data:
+
+- **MLP** on tabular (flattened) data
+- **LSTM / GRU** on sequential time-series data
+- **CNN** on OHLC candlestick images
+
+The central hypothesis, drawn from Jiang et al. (2023), is that encoding price histories as images and processing them with convolutional networks captures spatial patterns in price, volatility, and volume simultaneously — outperforming classical time-series approaches.
+
+---
+
+## Key Results
+
+Results obtained on a subset of S&P 500 tickers (2000–2022), 20-day window, 5-day prediction horizon.
+
+| Model    | Representation        | Accuracy | F1    | AUC       | Brier Score ↓ |
+|----------|-----------------------|----------|-------|-----------|---------------|
+| **GRU**  | Sequential            | **0.653**| 0.662 | **0.701** | **0.220**     |
+| **LSTM** | Sequential            | **0.655**| 0.659 | **0.701** | **0.220**     |
+| MLP      | Tabular (image scale) | 0.513    | **0.672** | 0.688 | 0.248         |
+| CNN      | OHLC Images           | 0.528    | 0.670 | 0.493     | 0.325         |
+
+> ↓ Lower Brier score is better. Bold values indicate best performance per metric.
+
+The sequential models (GRU and LSTM) dominate across accuracy, AUC, and Brier score. The MLP achieves the highest F1. Notably, the CNN — despite its visual representation — underperforms on this dataset, with an AUC close to random (0.493), suggesting the image-based approach may require larger data or longer training to generalize.
+
+---
+
+## Project Structure
 
 ```
 price-trend-dl/
-├── data/
-│   └── fetch_data.py        # Téléchargement Yahoo Finance, normalisation, labels
-├── imaging/
-│   └── ohlc_chart.py        # Génération d'images OHLC (fidèle au papier)
-├── models/
-│   ├── mlp.py               # MLP avec BatchNorm + Dropout
-│   ├── lstm.py              # LSTM / GRU / Attention-LSTM
-│   └── cnn.py               # CNN 2D + Grad-CAM
-├── training/
-│   └── train.py             # Pipeline unifié (early stopping, scheduler)
-├── evaluation/
-│   └── metrics.py           # Sharpe ratio, déciles, comparaison des modèles
-├── notebooks/
-│   └── results.ipynb        # Analyse complète et visualisations
-└── requirements.txt
+├── configs/             # Configuration files (hyperparameters, model settings)
+├── scripts/             # Utility and runner scripts
+├── src/                 # Core source code
+│   ├── data/
+│   │   └── fetch_data.py        # Yahoo Finance download, normalization, label generation
+│   ├── imaging/
+│   │   └── ohlc_chart.py        # OHLC image generation (faithful to the paper's spec)
+│   ├── models/
+│   │   ├── mlp.py               # MLP with BatchNorm + Dropout
+│   │   ├── lstm.py              # LSTM / GRU / Attention-LSTM
+│   │   └── cnn.py               # 2D CNN + Grad-CAM
+│   ├── training/
+│   │   └── train.py             # Unified training pipeline (early stopping, scheduler)
+│   └── evaluation/
+│       └── metrics.py           # Sharpe ratio, decile analysis, model comparison
+├── tests/               # Unit and integration tests
+├── main.py              # Entry point
+├── pyproject.toml       # Project metadata and dependencies
+└── uv.lock              # Dependency lockfile
 ```
 
 ---
 
-## Représentation des données
+## Data Representations
 
-### 1. Tabulaire (MLP)
-Les données OHLCV sont aplaties en un vecteur fixe. La normalisation **image scale** (max High = 1, min Low = 0) est cruciale — elle surpasse la normalisation par rendements cumulés.
+### 1. Tabular — MLP
 
-### 2. Séquentielle (LSTM / GRU)
-Les données sont traitées comme une séquence temporelle `(window, n_features)`. Le modèle apprend les dépendances temporelles via les états cachés.
+OHLCV data is flattened into a fixed-size vector. **Image-scale normalization** (max High = 1, min Low = 0 over the window) is applied — this consistently outperforms cumulative-return normalization as shown in the original paper.
 
-### 3. Visuelle — Images OHLC (CNN)
+### 2. Sequential — LSTM / GRU
 
-Chaque fenêtre de prix est encodée comme une image noir et blanc suivant exactement la spécification du papier :
+Data is treated as a time series of shape `(window, n_features)`. The model learns temporal dependencies through hidden states. Three variants are available: standard LSTM, GRU, and Attention-LSTM.
 
-- **Fond noir**, objets blancs
-- **3 pixels par jour** : barre haute-basse | marque ouverture | marque clôture
-- **Volume** : 1/5 inférieur de l'image
-- **Moyenne mobile** : tracée pixel par pixel (algorithme de Bresenham)
-- **Normalisation** : max High → haut de l'image, min Low → bas
+### 3. Visual — OHLC Images (CNN)
 
-| Fenêtre | Dimensions |
-|---------|-----------|
-| 5 jours | 32 × 15 px |
-| 20 jours | 64 × 60 px |
-| 60 jours | 96 × 180 px |
+Each price window is encoded as a grayscale image following the exact specification from Jiang et al. (2023):
 
-```
-Exemple d'image 20 jours (agrandie) :
+- **Black background**, white objects
+- **3 pixels per trading day**: high-low bar | open tick | close tick
+- **Volume bars** occupy the bottom 1/5 of the image
+- **Moving average** drawn pixel-by-pixel using Bresenham's line algorithm
+- **Normalization**: max High maps to the image top, min Low maps to the bottom
 
-████████████████████████████████████████████████
-█ ┤  ┤  ┤           │  ┤  ┤  ┤  ┤  ┤  ┤  ┤  █
-█ ┼──┼──┼──┼──┼─────┼──┼──┼──┼──┼──┼──┼──┼──█
-█ ┤  ┤  ┤  ┤  ┤     ┤  ┤  ┤  ┤  ┤  ┤  ┤  ┤  █
-█─────────────────────────────────────────────█
-█ ▌▌ ▌▌  ▌ ▌  ▌ ▌▌▌  ▌ ▌▌ ▌▌ ▌▌ ▌▌ ▌  ▌▌  ▌ █  ← Volume
-████████████████████████████████████████████████
-```
+| Window   | Image Dimensions |
+|----------|-----------------|
+| 5 days   | 32 × 15 px      |
+| 20 days  | 64 × 60 px      |
+| 60 days  | 96 × 180 px     |
 
 ---
 
-## Axes d'analyse
+## Discussion: Gap with the Original Paper
 
-### 1. Impact de la représentation
-Comparaison directe MLP vs LSTM vs CNN avec les **mêmes données** et la **même normalisation**.
-Résultat principal : l'image scale est le facteur dominant ; le CNN ajoute une couche de non-linéarité spatiale qui capte les relations entre prix, volatilité et volume simultanément.
+Our empirical results diverge from Jiang et al. (2023) in a notable way: **the CNN does not outperform sequential models** on our dataset, contrary to the paper's central finding.
 
-### 2. Interprétabilité — Grad-CAM
-Visualisation des zones de l'image OHLC qui activent le CNN :
+| Metric   | Paper's claim (CNN) | Our CNN | Our best model  |
+|----------|---------------------|---------|-----------------|
+| Accuracy | ~56%                | 52.8%   | LSTM (65.5%)    |
+| AUC      | ~0.59               | 0.493   | GRU/LSTM (0.701)|
 
-- Les jours récents (t-1, t-2) sont les plus influents
-- La position du Close par rapport au range High-Low est un signal fort
-- Le volume élevé renforce les signaux directionnels
+Several factors likely explain this gap:
 
-### 3. Transfer Learning
-Un modèle entraîné sur des données US (5 jours) est appliqué directement à des données CAC40 sans ré-entraînement. Résultat cohérent avec le papier : le transfert surpasse le ré-entraînement local sur les marchés de petite taille.
+**Data scale.** The original paper trains on the full US stock universe over several decades. Our experiments use a subset of S&P 500 tickers (2000–2022), which may be insufficient for the CNN to learn robust visual patterns from images as small as 64×60 px.
 
-### 4. Robustesse
-- Fenêtres temporelles : 5j, 20j, 60j
-- Ajout / retrait du volume
-- Bruit sur les images (robustesse au MaxPooling)
+**Training budget.** CNNs require significantly more data and epochs to converge compared to LSTMs on this type of task. Our unified training pipeline applies the same budget across all architectures, which may disadvantage the CNN.
+
+**Image resolution.** At 64×60 px for a 20-day window, the visual signal is very compressed. The CNN's near-random AUC (0.493) suggests it may be underfitting rather than learning meaningful chart patterns.
+
+**Takeaway.** On a constrained dataset, sequential architectures (GRU, LSTM) are more data-efficient than CNNs for price trend prediction. Reproducing the paper's CNN advantage likely requires the full-scale data setup described in the original work.
+
+---
+
+## Analysis Dimensions
+
+### Representation Impact
+
+Direct comparison of MLP, LSTM, and CNN on **identical data** with **identical normalization**. Key finding: image-scale normalization is the dominant factor; the CNN adds a layer of spatial non-linearity that jointly captures relationships between price range, volatility, and volume.
+
+### Interpretability — Grad-CAM
+
+Gradient-weighted class activation maps highlight which regions of the OHLC image drive CNN predictions:
+
+- Recent days (t-1, t-2) carry the most weight
+- The Close position relative to the High-Low range is a strong directional signal
+- High-volume bars amplify directional signals
+
+### Robustness Analysis
+
+- Time windows: 5-day, 20-day, 60-day
+- Volume inclusion vs. exclusion
+- Image noise robustness (MaxPooling)
 
 ---
 
 ## Installation
 
+**Using pip:**
+
 ```bash
-git clone https://github.com/Hugo3094/price-trend-dl.git
-cd price-trend-dl
-pip install -r requirements.txt
+git clone https://github.com/Hugo3094/Price-trend-dl.git
+cd Price-trend-dl
+pip install -e .
 ```
+
+**Using uv (recommended):**
+
+```bash
+git clone https://github.com/Hugo3094/Price-trend-dl.git
+cd Price-trend-dl
+uv sync
+```
+
+Requires **Python >= 3.10**.
 
 ---
 
-## Utilisation rapide
+## Quick Start
 
 ```python
-from data.fetch_data import download_ohlcv, make_multi_stock_dataset
-from imaging.ohlc_chart import make_image_dataset
-from models.cnn import build_cnn
-from training.train import Trainer, set_seed
+from src.data.fetch_data import download_ohlcv, make_multi_stock_dataset
+from src.imaging.ohlc_chart import make_image_dataset
+from src.models.cnn import build_cnn
+from src.training.train import Trainer, set_seed
 
 set_seed(42)
 
-# Données
+# Download data
 raw = download_ohlcv(start="2010-01-01", end="2022-12-31")
 
-# Dataset images
+# Build image dataset
 img_ds = make_image_dataset(raw, window=20, horizon=5)
 
-# Modèle
+# Build model
 cnn = build_cnn(window=20)
 
-# Entraînement
+# Train
 trainer = Trainer(cnn, model_type="cnn", save_dir="checkpoints/cnn")
 history = trainer.fit(
     img_ds["X_train"], img_ds["y_train"],
     img_ds["X_val"],   img_ds["y_val"],
-    epochs=50, batch_size=64,
+    epochs=50,
+    batch_size=64,
 )
 ```
 
 ---
 
-## Référence
+## Dependencies
+
+| Package        | Version   | Purpose                          |
+|----------------|-----------|----------------------------------|
+| `torch`        | ≥ 2.1.0   | Deep learning framework          |
+| `torchvision`  | ≥ 0.16.0  | Image transforms                 |
+| `yfinance`     | ≥ 0.2.36  | Market data download             |
+| `numpy`        | ≥ 1.24    | Numerical computing              |
+| `pandas`       | ≥ 2.0     | Data manipulation                |
+| `scikit-learn` | ≥ 1.3     | Metrics and preprocessing        |
+| `pillow`       | ≥ 10.0    | Image generation                 |
+| `matplotlib`   | ≥ 3.7     | Visualization                    |
+| `cvxpy`        | ≥ 1.4     | Portfolio optimization           |
+| `pytest`       | ≥ 9.0.3   | Testing                          |
+
+---
+
+## Authors
+
+**Mathieu Lang · Mateo Molinaro · Hugo Lecointre**
+
+---
+
+## Reference
 
 ```bibtex
 @article{jiang2023reimagining,
@@ -157,9 +238,3 @@ history = trainer.fit(
   doi     = {10.1111/jofi.13268}
 }
 ```
-
----
-
-## Auteurs
-
-Mathieu Lang -- Mateo Molinaro -- Hugo Lecointre
